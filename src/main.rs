@@ -1,19 +1,37 @@
-use std::str::FromStr;
+use std::{str::FromStr, sync::atomic::Ordering};
 use tao::platform::unix::WindowExtUnix;
 use wry::WebViewBuilderExtUnix;
 
-fn main() {}
+fn main() {
+    __webview()
+}
 fn __get_cookies() {
-    let file = std::fs::File::open("./webview_storage/cookies")
-        .map(std::io::BufReader::new)
-        .unwrap();
-    let cookies = reqwest_cookie_store::CookieStore::load(file, |cookie_str| {
-        cookie_from_str(cookie_str.to_string())
-    })
-    .unwrap();
-    for c in cookies.iter_any() {
-        println!("{:?}\n", c);
-    }
+    let _cookie_store = std::sync::Arc::new(reqwest_cookie_store::CookieStoreMutex::new({
+        if let Ok(file) = std::fs::File::open("cookies.json").map(std::io::BufReader::new) {
+            // use re-exported version of `CookieStore` for crate compatibility
+            reqwest_cookie_store::CookieStore::load_json(file).unwrap()
+        } else {
+            let file = match std::fs::File::open("./webview_storage/cookies")
+                .map(std::io::BufReader::new)
+            {
+                Ok(file) => file,
+                Err(_) => {
+                    __webview();
+                    std::fs::File::open("./webview_storage/cookies")
+                        .map(std::io::BufReader::new)
+                        .unwrap()
+                }
+            };
+
+            let _cookies = reqwest_cookie_store::CookieStore::load(file, |cookie_str| {
+                cookie_from_str(cookie_str.to_string())
+            })
+            .unwrap();
+            let mut file = std::fs::File::create("cookies.json").unwrap();
+            _cookies.save_json(&mut file).unwrap();
+            _cookies
+        }
+    }));
 
     fn cookie_from_str(
         cookie_str: String,
@@ -26,6 +44,7 @@ fn __get_cookies() {
         };
         let mut list: Vec<&str> = _str.split('\t').collect();
         let domain: String = list.remove(0).to_string();
+        // base site?
         let _unknown_bool0 = bool::from_str(&list.remove(0).to_lowercase()).unwrap();
         let path = list.remove(0).to_string();
         let is_secure = bool::from_str(&list.remove(0).to_lowercase()).unwrap();
@@ -33,9 +52,9 @@ fn __get_cookies() {
         let name = list.remove(0).to_string();
         let value = list.remove(0).to_string();
         let samesite = match list.remove(0) {
-            "Lax" => cookie::SameSite::Lax,
             "Strict" => cookie::SameSite::Strict,
-            _ => cookie::SameSite::None,
+            "None" => cookie::SameSite::None,
+            _ => cookie::SameSite::Lax,
         };
         let cookie = cookie::Cookie::build((name, value))
             .path(path)
@@ -55,6 +74,7 @@ fn __get_cookies() {
         return Ok(ret);
     }
 }
+static _WEBVIEW_LOADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 fn __webview() {
     let data_dir = std::path::PathBuf::from(r"./webview_storage");
     let event_loop = tao::event_loop::EventLoop::new();
@@ -81,41 +101,38 @@ fn __webview() {
         wry::WebViewBuilder::new_gtk(vbox)
     };
     let mut webcontext = wry::WebContext::new(Some(data_dir));
-    let _webview = builder
+    let _webview: wry::WebView = builder
         .with_url("https://www.google.com")
         .with_web_context(&mut webcontext)
-        .with_on_page_load_handler(page_loaded)
+        .with_on_page_load_handler(|e, _| {
+            match e {
+                wry::PageLoadEvent::Finished => _WEBVIEW_LOADED.store(true, Ordering::Release),
+                _ => {}
+            };
+        })
         .build()
         .unwrap();
-
     event_loop.run(move |event, _, control_flow| {
         *control_flow = tao::event_loop::ControlFlow::Wait;
-
+        if _WEBVIEW_LOADED.load(Ordering::Relaxed) {
+            println!("webview_loaded: {:?}", _WEBVIEW_LOADED);
+            _WEBVIEW_LOADED.store(false, Ordering::Relaxed)
+        }
         if let tao::event::Event::WindowEvent {
             event: tao::event::WindowEvent::CloseRequested,
             ..
         } = event
         {
-            println!("webview exit");
+            println!("{:?}", _WEBVIEW_LOADED);
             *control_flow = tao::event_loop::ControlFlow::Exit
         }
     });
-    fn page_loaded(loadevent: wry::PageLoadEvent, eventstr: String) {
-        match loadevent {
-            wry::PageLoadEvent::Started => println!("load started"),
-            wry::PageLoadEvent::Finished => println!("page loaded:"),
-        };
-        println!("{:?}", eventstr)
-    }
 }
-
-fn __reqests() {
-    let cookies = std::sync::Arc::new(reqwest_cookie_store::CookieStoreMutex::new(
-        reqwest_cookie_store::CookieStore::new(None),
-    ));
+fn __reqests(_cookie_store: std::sync::Arc<reqwest_cookie_store::CookieStoreMutex>) {
     let client = match reqwest::blocking::Client::builder()
         .user_agent("test")
-        .cookie_provider(std::sync::Arc::clone(&cookies))
+        // how to get cookies back? dont want to copy. read example from doc?
+        .cookie_provider(_cookie_store)
         .https_only(true)
         .build()
     {
@@ -140,7 +157,4 @@ fn __reqests() {
         Err(err) => panic!("error {err}"),
     };
     println!("{0}", text);
-    for c in cookies.lock().unwrap().iter_any() {
-        println!("{:?}", c)
-    }
 }
