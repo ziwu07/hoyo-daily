@@ -1,38 +1,47 @@
+use log::{debug, error, info, trace, warn};
 use std::{str::FromStr, sync::atomic::Ordering};
 use tao::platform::unix::WindowExtUnix;
 use wry::WebViewBuilderExtUnix;
 
+// consts
+const USER_AGENT: &str = "test";
+const WEBVIEW_DATA_DIR: &str = "./webview_storage";
+const WEBVIEW_COOKIES_FILE: &str = "./webview_storage/cookies";
+
 fn main() {
-    __webview()
+    __webview("https://www.google.com".to_string());
+    // let log_file = "./hoyo-daily.log";
+    // let _logger = log4rs::init_config(
+    //     log4rs::Config::builder()
+    //         .appender(
+    //             log4rs::config::Appender::builder()
+    //                 .filter(Box::new(log4rs::filter::threshold::ThresholdFilter::new(
+    //                     log::LevelFilter::Debug,
+    //                 )))
+    //                 .build(
+    //                     "logfile",
+    //                     Box::new(
+    //                         log4rs::append::file::FileAppender::builder()
+    //                             .encoder(Box::new(log4rs::encode::pattern::PatternEncoder::new(
+    //                                 "{d(%Y-%m-%d %H:%M:%S):<20.20} {l:<5.5} {L:<4.4} -- {m}{n}",
+    //                             )))
+    //                             .build(log_file)
+    //                             .unwrap(),
+    //                     ),
+    //                 ),
+    //         )
+    //         .build(
+    //             log4rs::config::Root::builder()
+    //                 .appender("logfile")
+    //                 .build(log::LevelFilter::Debug),
+    //         )
+    //         .unwrap(),
+    // )
+    // .unwrap();
+    // let url = "https://".to_string();
+    // let _cookies = __get_cookies(url);
 }
-fn __get_cookies() {
-    let _cookie_store = std::sync::Arc::new(reqwest_cookie_store::CookieStoreMutex::new({
-        if let Ok(file) = std::fs::File::open("cookies.json").map(std::io::BufReader::new) {
-            // use re-exported version of `CookieStore` for crate compatibility
-            reqwest_cookie_store::CookieStore::load_json(file).unwrap()
-        } else {
-            let file = match std::fs::File::open("./webview_storage/cookies")
-                .map(std::io::BufReader::new)
-            {
-                Ok(file) => file,
-                Err(_) => {
-                    __webview();
-                    std::fs::File::open("./webview_storage/cookies")
-                        .map(std::io::BufReader::new)
-                        .unwrap()
-                }
-            };
-
-            let _cookies = reqwest_cookie_store::CookieStore::load(file, |cookie_str| {
-                cookie_from_str(cookie_str.to_string())
-            })
-            .unwrap();
-            let mut file = std::fs::File::create("cookies.json").unwrap();
-            _cookies.save_json(&mut file).unwrap();
-            _cookies
-        }
-    }));
-
+fn __get_cookies(url: String) -> std::sync::Arc<reqwest_cookie_store::CookieStoreMutex> {
     fn cookie_from_str(
         cookie_str: String,
     ) -> Result<cookie_store::Cookie<'static>, cookie_store::CookieError> {
@@ -73,12 +82,38 @@ fn __get_cookies() {
         .unwrap();
         return Ok(ret);
     }
+    let cookie_file = "cookies.json";
+    std::sync::Arc::new(reqwest_cookie_store::CookieStoreMutex::new({
+        if let Ok(file) = std::fs::File::open(cookie_file).map(std::io::BufReader::new) {
+            // use re-exported version of `CookieStore` for crate compatibility
+            reqwest_cookie_store::CookieStore::load_json(file).unwrap()
+        } else {
+            let file = match std::fs::File::open(WEBVIEW_COOKIES_FILE).map(std::io::BufReader::new)
+            {
+                Ok(file) => file,
+                Err(_) => {
+                    __webview(url);
+                    std::fs::File::open(WEBVIEW_COOKIES_FILE)
+                        .map(std::io::BufReader::new)
+                        .unwrap()
+                }
+            };
+
+            let _cookies = reqwest_cookie_store::CookieStore::load(file, |cookie_str| {
+                cookie_from_str(cookie_str.to_string())
+            })
+            .unwrap();
+            let mut file = std::fs::File::create(cookie_file).unwrap();
+            _cookies.save_json(&mut file).unwrap();
+            _cookies
+        }
+    }))
 }
-static _WEBVIEW_LOADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-fn __webview() {
-    let data_dir = std::path::PathBuf::from(r"./webview_storage");
+fn __webview(url: String) {
+    let data_dir = std::path::PathBuf::from(WEBVIEW_DATA_DIR);
     let event_loop = tao::event_loop::EventLoop::new();
     let window = tao::window::WindowBuilder::new()
+        .with_title("tmp name")
         .build(&event_loop)
         .unwrap();
 
@@ -102,46 +137,46 @@ fn __webview() {
     };
     let mut webcontext = wry::WebContext::new(Some(data_dir));
     let _webview: wry::WebView = builder
-        .with_url("https://www.google.com")
+        .with_url(url)
         .with_web_context(&mut webcontext)
-        .with_on_page_load_handler(|e, _| {
-            match e {
-                wry::PageLoadEvent::Finished => _WEBVIEW_LOADED.store(true, Ordering::Release),
-                _ => {}
-            };
-        })
+        .with_headers(headers())
+        .with_initialization_script()
+        .with_user_agent(USER_AGENT)
+        .with_clipboard(true)
+        .with_devtools(true)
         .build()
         .unwrap();
+    event_loop.set_device_event_filter(tao::event_loop::DeviceEventFilter::Always);
     event_loop.run(move |event, _, control_flow| {
         *control_flow = tao::event_loop::ControlFlow::Wait;
-        if _WEBVIEW_LOADED.load(Ordering::Relaxed) {
-            println!("webview_loaded: {:?}", _WEBVIEW_LOADED);
-            _WEBVIEW_LOADED.store(false, Ordering::Relaxed)
-        }
-        if let tao::event::Event::WindowEvent {
-            event: tao::event::WindowEvent::CloseRequested,
-            ..
-        } = event
-        {
-            println!("{:?}", _WEBVIEW_LOADED);
-            *control_flow = tao::event_loop::ControlFlow::Exit
-        }
+        match event {
+            tao::event::Event::WindowEvent {
+                event: tao::event::WindowEvent::CloseRequested,
+                ..
+            } => *control_flow = tao::event_loop::ControlFlow::Exit,
+            _ => (),
+        };
     });
 }
-fn __reqests(_cookie_store: std::sync::Arc<reqwest_cookie_store::CookieStoreMutex>) {
+fn __reqests(_cookie_store: &std::sync::Arc<reqwest_cookie_store::CookieStoreMutex>) {
     let client = match reqwest::blocking::Client::builder()
-        .user_agent("test")
-        // how to get cookies back? dont want to copy. read example from doc?
-        .cookie_provider(_cookie_store)
+        .user_agent(USER_AGENT)
+        .cookie_provider(std::sync::Arc::clone(&_cookie_store))
         .https_only(true)
         .build()
     {
         Ok(client) => client,
         Err(err) => panic!("error {err}"),
     };
-    let mut response = match client
-        .get("https://www.google.com")
-        // .body("the body of the post request")
+    for c in _cookie_store.lock().unwrap().iter_any() {
+        println!("{:?}", c)
+    }
+    let response = match client
+        .post("")
+        .headers(headers())
+        // TODO: get from def file
+        .query("")
+        .body("")
         .send()
     {
         Ok(response) => response,
@@ -156,5 +191,21 @@ fn __reqests(_cookie_store: std::sync::Arc<reqwest_cookie_store::CookieStoreMute
         Ok(text) => text,
         Err(err) => panic!("error {err}"),
     };
-    println!("{0}", text);
+    // println!("{0}\n\n", text);
+}
+fn headers() -> reqwest::header::HeaderMap {
+    use reqwest::header::*;
+    let mut headers = HeaderMap::new();
+    headers.append(ACCEPT, "application/json".parse().unwrap());
+    headers.append(ACCEPT_LANGUAGE, "en-US,en;q=0.9".parse().unwrap());
+    headers.append(CONNECTION, "keep-alive".parse().unwrap());
+    headers.append(
+        CONTENT_TYPE,
+        "application/json;charset=utf-8".parse().unwrap(),
+    );
+    headers.append(USER_AGENT, self::USER_AGENT.parse().unwrap());
+    // TODO: parse from definition file
+    headers.append(ORIGIN, "https://act.hoyolab.com".parse().unwrap());
+    headers.append(REFERER, "".parse().unwrap());
+    headers
 }
