@@ -9,7 +9,7 @@ const WEBVIEW_DATA_DIR: &str = "./webview_storage";
 const WEBVIEW_COOKIES_FILE: &str = "./webview_storage/cookies";
 
 fn main() {
-    __webview("https://www.google.com".to_string());
+    __webview("https://act.hoyolab.com/ys/event/signin-sea-v3/index.html?act_id=e202102251931481&hyl_auth_required=true&hyl_presentation_style=fullscreen&lang=en-us&bbs_theme=dark&bbs_theme_device=1https://www.google.com".to_string());
     // let log_file = "./hoyo-daily.log";
     // let _logger = log4rs::init_config(
     //     log4rs::Config::builder()
@@ -136,11 +136,12 @@ fn __webview(url: String) {
         wry::WebViewBuilder::new_gtk(vbox)
     };
     let mut webcontext = wry::WebContext::new(Some(data_dir));
+    let script = include_str!("./script.js");
     let _webview: wry::WebView = builder
         .with_url(url)
         .with_web_context(&mut webcontext)
         .with_headers(headers())
-        .with_initialization_script()
+        .with_initialization_script(script)
         .with_user_agent(USER_AGENT)
         .with_clipboard(true)
         .with_devtools(true)
